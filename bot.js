@@ -381,9 +381,28 @@ client.on('messageCreate', async (message) => {
   const currentChannelId = message.channel.id;
 
   // ─── STRICT MODE: Intercept messages in link channels ──────────────────
-  // Delete the message, find the latest link embed, create/find its thread,
-  // and repost the user's message there.
+  // Only intercept if the message doesn't contain a link matching this channel's category.
+  // e.g., YouTube URLs are allowed in the YouTube channel.
   if (isDestinationChannel(currentChannelId)) {
+    // Determine what category this channel is for
+    let channelCategory = null;
+    if (currentChannelId === YOUTUBE_CHANNEL_ID) channelCategory = 'youtube';
+    else if (currentChannelId === STEAM_CHANNEL_ID) channelCategory = 'steam';
+    else if (currentChannelId === LINKS_CHANNEL_ID) channelCategory = 'other';
+
+    // Check if the message contains a URL matching this channel's category
+    const urlsInMessage = content.match(URL_REGEX);
+    const hasMatchingUrl = urlsInMessage && urlsInMessage.some(url => {
+      const urlCategory = categorizeUrl(url);
+      return urlCategory === channelCategory;
+    });
+
+    // If the message contains a matching URL, allow it (don't delete, don't move to thread)
+    if (hasMatchingUrl) {
+      return;
+    }
+
+    // Otherwise, enforce strict mode: delete and move to thread
     try {
       // Save the content and attachments before deleting
       const savedContent = message.content;
