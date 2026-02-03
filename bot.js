@@ -122,22 +122,37 @@ function buildLinkEmbed(category, urls, user, sourceChannel, timestamp) {
 }
 
 /**
- * Find the most recent bot link embed in a channel and get or create a thread on it.
- * Returns the thread, or null if no link embeds exist.
+ * Find the most recent link message in a channel and get or create a thread on it.
+ * A "link message" is either:
+ *   - A bot embed (from routing links)
+ *   - A user message containing a URL matching the channel's category
+ * Returns the thread, or null if no link messages exist.
  */
-async function getOrCreateLatestThread(channel) {
-  // Fetch recent messages to find the latest bot embed
+async function getOrCreateLatestThread(channel, channelCategory) {
   const recentMessages = await channel.messages.fetch({ limit: 50 });
-  const latestEmbed = recentMessages.find(
-    (msg) => msg.author.id === client.user.id && msg.embeds.length > 0
-  );
 
-  if (!latestEmbed) return null;
+  // Find the latest "link message" - either a bot embed or a user post with matching URL
+  const latestLinkMessage = recentMessages.find((msg) => {
+    // Bot embed messages are always valid
+    if (msg.author.id === client.user.id && msg.embeds.length > 0) {
+      return true;
+    }
+    // User messages with a matching URL are also valid
+    if (!msg.author.bot) {
+      const urls = msg.content.match(URL_REGEX);
+      if (urls && urls.some(url => categorizeUrl(url) === channelCategory)) {
+        return true;
+      }
+    }
+    return false;
+  });
+
+  if (!latestLinkMessage) return null;
 
   // Check if a thread already exists on this message
-  if (latestEmbed.hasThread) {
+  if (latestLinkMessage.hasThread) {
     try {
-      const existingThread = await latestEmbed.thread?.fetch();
+      const existingThread = await latestLinkMessage.thread?.fetch();
       if (existingThread && !existingThread.archived) return existingThread;
       // If archived, unarchive it
       if (existingThread && existingThread.archived) {
@@ -149,23 +164,38 @@ async function getOrCreateLatestThread(channel) {
     }
   }
 
-  // Extract a short name from the embed for the thread title
-  const embedTitle = latestEmbed.embeds[0]?.title || 'Link Discussion';
-  const embedUrl = latestEmbed.embeds[0]?.description?.split('\n')[0] || '';
-  // Clean up the URL for a thread name (Discord has 100 char limit)
-  let threadName = `💬 ${embedTitle}`;
-  if (embedUrl) {
-    // Extract domain or video title for a readable thread name
-    try {
-      const urlObj = new URL(embedUrl.trim());
-      threadName = `💬 ${urlObj.hostname}${urlObj.pathname}`.substring(0, 100);
-    } catch {
+  // Determine thread name based on message type
+  let threadName = '💬 Link Discussion';
+
+  if (latestLinkMessage.author.id === client.user.id && latestLinkMessage.embeds.length > 0) {
+    // Bot embed - extract info from embed
+    const embedTitle = latestLinkMessage.embeds[0]?.title || 'Link Discussion';
+    const embedUrl = latestLinkMessage.embeds[0]?.description?.split('\n')[0] || '';
+    if (embedUrl) {
+      try {
+        const urlObj = new URL(embedUrl.trim());
+        threadName = `💬 ${urlObj.hostname}${urlObj.pathname}`.substring(0, 100);
+      } catch {
+        threadName = `💬 ${embedTitle}`.substring(0, 100);
+      }
+    } else {
       threadName = `💬 ${embedTitle}`.substring(0, 100);
+    }
+  } else {
+    // User message - extract URL from content
+    const urls = latestLinkMessage.content.match(URL_REGEX);
+    if (urls && urls.length > 0) {
+      try {
+        const urlObj = new URL(urls[0].trim());
+        threadName = `💬 ${urlObj.hostname}${urlObj.pathname}`.substring(0, 100);
+      } catch {
+        threadName = '💬 Link Discussion';
+      }
     }
   }
 
-  // Create a new thread on the embed message
-  const thread = await latestEmbed.startThread({
+  // Create a new thread on the link message
+  const thread = await latestLinkMessage.startThread({
     name: threadName,
     autoArchiveDuration: 1440, // Auto-archive after 24 hours of inactivity
     reason: 'Link Router Bot: auto-created discussion thread',
@@ -411,8 +441,8 @@ client.on('messageCreate', async (message) => {
 
       await message.delete();
 
-      // Find or create a thread on the most recent link embed
-      const thread = await getOrCreateLatestThread(message.channel);
+      // Find or create a thread on the most recent link message
+      const thread = await getOrCreateLatestThread(message.channel, channelCategory);
 
       if (thread) {
         // Repost the user's message in the thread, attributed to them
